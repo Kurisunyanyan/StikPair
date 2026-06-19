@@ -1,6 +1,7 @@
 import BackgroundTasks
 import Foundation
 import StikPairFFI
+import UIKit
 import UserNotifications
 
 @MainActor
@@ -36,7 +37,8 @@ final class PairingController: ObservableObject {
     private var netService: NetService?
     private let localNetwork = LocalNetworkAuthorization()
 
-    private var bgTask: BGContinuedProcessingTask?
+    private var bgTaskWrapper: Any? // Holds BGContinuedProcessingTaskWrapper on iOS 26+
+    private var legacyBgTaskId: UIBackgroundTaskIdentifier = .invalid
     private var pairingStarted = false
     private var taskFinished = false
 
@@ -48,13 +50,15 @@ final class PairingController: ObservableObject {
     }
 
     nonisolated func registerBackgroundTask() {
-        BGTaskScheduler.shared.register(
-            forTaskWithIdentifier: PairingController.taskIdentifier,
-            using: DispatchQueue.main
-        ) { task in
-            guard let task = task as? BGContinuedProcessingTask else { return }
-            MainActor.assumeIsolated {
-                PairingController.shared.runPairing(task: task)
+        if #available(iOS 26.0, *) {
+            BGTaskScheduler.shared.register(
+                forTaskWithIdentifier: PairingController.taskIdentifier,
+                using: DispatchQueue.main
+            ) { task in
+                guard let task = task as? BGContinuedProcessingTask else { return }
+                MainActor.assumeIsolated {
+                    PairingController.shared.runPairing(task: task)
+                }
             }
         }
     }
@@ -82,36 +86,51 @@ final class PairingController: ObservableObject {
     }
 
     private func submitBackgroundTask() {
-        let request = BGContinuedProcessingTaskRequest(
-            identifier: PairingController.taskIdentifier,
-            title: "StikPair",
-            subtitle: "Waiting for a device to connect…")
-        request.strategy = .queue
+        if #available(iOS 26.0, *) {
+            let request = BGContinuedProcessingTaskRequest(
+                identifier: PairingController.taskIdentifier,
+                title: "StikPair",
+                subtitle: "Waiting for a device to connect…")
+            request.strategy = .queue
 
-        do {
-            try BGTaskScheduler.shared.submit(request)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
-                guard let self, !self.pairingStarted else { return }
-                self.runPairing(task: nil)
+            do {
+                try BGTaskScheduler.shared.submit(request)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                    guard let self, !self.pairingStarted else { return }
+                    self.runPairing(task: nil)
+                }
+            } catch {
+                runPairing(task: nil)
             }
-        } catch {
+        } else {
+            legacyBgTaskId = UIApplication.shared.beginBackgroundTask(withName: "StikPairPairing") { [weak self] in
+                guard let self = self else { return }
+                self.finishTask(success: false)
+                if self.isRunning {
+                    self.phase = .failed("Background time expired before a device connected. Tap Pair to try again.")
+                }
+            }
             runPairing(task: nil)
         }
     }
 
-    private func runPairing(task: BGContinuedProcessingTask?) {
+    private func runPairing(task: Any?) {
         guard !pairingStarted else { return }
         pairingStarted = true
         taskFinished = false
-        bgTask = task
 
-        task?.progress.totalUnitCount = 100
-        task?.progress.completedUnitCount = 5
-        task?.expirationHandler = { [weak self] in
-            guard let self else { return }
-            self.finishTask(success: false)
-            if self.isRunning {
-                self.phase = .failed("Background time expired before a device connected. Tap Pair to try again.")
+        if #available(iOS 26.0, *) {
+            if let bgTask = task as? BGContinuedProcessingTask {
+                bgTaskWrapper = BGContinuedProcessingTaskWrapper(bgTask)
+                bgTask.progress.totalUnitCount = 100
+                bgTask.progress.completedUnitCount = 5
+                bgTask.expirationHandler = { [weak self] in
+                    guard let self else { return }
+                    self.finishTask(success: false)
+                    if self.isRunning {
+                        self.phase = .failed("Background time expired before a device connected. Tap Pair to try again.")
+                    }
+                }
             }
         }
 
@@ -154,7 +173,11 @@ final class PairingController: ObservableObject {
                 self.pairingStarted = false
                 self.phase = outcome
                 if case .success = outcome {
-                    self.bgTask?.progress.completedUnitCount = 100
+                    if #available(iOS 26.0, *) {
+                        if let wrapper = self.bgTaskWrapper as? BGContinuedProcessingTaskWrapper {
+                            wrapper.task.progress.completedUnitCount = 100
+                        }
+                    }
                     self.postReturnNotification()
                 }
                 self.finishTask(success: rc == 0)
@@ -165,8 +188,21 @@ final class PairingController: ObservableObject {
     private func finishTask(success: Bool) {
         guard !taskFinished else { return }
         taskFinished = true
-        bgTask?.setTaskCompleted(success: success)
-        bgTask = nil
+        if #available(iOS 26.0, *) {
+            if let wrapper = bgTaskWrapper as? BGContinuedProcessingTaskWrapper {
+                wrapper.task.setTaskCompleted(success: success)
+            }
+        } else {
+            endLegacyBackgroundTask()
+        }
+        bgTaskWrapper = nil
+    }
+
+    private func endLegacyBackgroundTask() {
+        if legacyBgTaskId != .invalid {
+            UIApplication.shared.endBackgroundTask(legacyBgTaskId)
+            legacyBgTaskId = .invalid
+        }
     }
 
     // MARK: - Callback handlers (main thread)
@@ -185,8 +221,12 @@ final class PairingController: ObservableObject {
 
     fileprivate func presentPin(_ pin: String) {
         phase = .showPin(pin)
-        bgTask?.progress.completedUnitCount = 50
-        bgTask?.updateTitle("StikPair", subtitle: "Enter code \(pin) on this device")
+        if #available(iOS 26.0, *) {
+            if let wrapper = bgTaskWrapper as? BGContinuedProcessingTaskWrapper {
+                wrapper.task.progress.completedUnitCount = 50
+                wrapper.task.updateTitle("StikPair", subtitle: "Enter code \(pin) on this device")
+            }
+        }
     }
 
     private func stopAdvertising() {
@@ -250,3 +290,12 @@ private func cString(_ ptr: UnsafeMutablePointer<CChar>?) -> String {
     guard let ptr = ptr else { return "" }
     return String(cString: ptr)
 }
+
+@available(iOS 26.0, *)
+private final class BGContinuedProcessingTaskWrapper {
+    let task: BGContinuedProcessingTask
+    init(_ task: BGContinuedProcessingTask) {
+        self.task = task
+    }
+}
+

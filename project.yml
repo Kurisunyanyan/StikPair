@@ -2,7 +2,7 @@ name: StikPair
 options:
   bundleIdPrefix: com.stik
   deploymentTarget:
-    iOS: "27.0"
+    iOS: "17.0"
   createIntermediateGroups: true
 
 settings:

@@ -4,7 +4,7 @@ struct ContentView: View {
     @StateObject private var controller = PairingController.shared
 
     var body: some View {
-        GlassEffectContainer(spacing: 24) {
+        StikGlassContainer(spacing: 24) {
             VStack(spacing: 28) {
                 Spacer()
 
@@ -34,7 +34,7 @@ struct ContentView: View {
                     .font(.headline)
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.glassProminent)
+            .stikButtonStyleProminent()
             .controlSize(.large)
 
         case .waiting:
@@ -53,7 +53,7 @@ struct ContentView: View {
                 }
                 .padding()
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .glassEffect(.regular, in: .rect(cornerRadius: 20))
+                .stikGlassEffect(cornerRadius: 20)
             }
 
         case .showPin(let pin):
@@ -67,7 +67,7 @@ struct ContentView: View {
                     .textSelection(.enabled)
                     .padding(.horizontal, 28)
                     .padding(.vertical, 14)
-                    .glassEffect(.regular, in: .capsule)
+                    .stikGlassEffectCapsule()
                 ProgressView()
             }
 
@@ -85,7 +85,7 @@ struct ContentView: View {
                     Label("Export Pairing File", systemImage: "square.and.arrow.up")
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.glassProminent)
+                .stikButtonStyleProminent()
                 .controlSize(.large)
                 .padding(.top, 4)
             }
@@ -101,7 +101,7 @@ struct ContentView: View {
                     .multilineTextAlignment(.center)
                     .textSelection(.enabled)
                 Button("Try Again") { controller.reset() }
-                    .buttonStyle(.glassProminent)
+                    .stikButtonStyleProminent()
                     .controlSize(.large)
                     .padding(.top, 4)
             }
